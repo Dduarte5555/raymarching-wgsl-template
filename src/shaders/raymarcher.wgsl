@@ -68,25 +68,23 @@ fn op(op: f32, d1: f32, d2: f32, col1: vec3f, col2: vec3f, k: f32) -> vec4f
   return op_smooth_intersection(d2, d1, col2, col1, k);
 }
 
-fn repeat(p: vec3f, offset: vec3f) -> vec3f
-{
-  return vec3f(0.0);
+// Função para repetir o espaço ao redor de um ponto específico
+fn repeat(p: vec3f, offset: vec3f) -> vec3f {
+    return modc(p + 0.5 * offset, offset) - 0.5 * offset;
 }
 
-fn transform_p(p: vec3f, option: vec2f) -> vec3f
-{
-  // normal mode
-  if (option.x <= 1.0)
-  {
-    return p;
-  }
+// Função para transformar um ponto com diferentes opções
+fn transform_p(p: vec3f, option: vec2f) -> vec3f {
+    // Modo normal
+    if (option.x <= 1.0) {
+        return p;
+    }
 
-  // return repeat / mod mode
-  return repeat(p, vec3f(option.y));
+    // Retornar modo de repetição/mod
+    return repeat(p, vec3f(option.y));
 }
 
-fn scene(p: vec3f) -> vec4f // xyz = color, w = distance
-{
+fn scene(p: vec3f) -> vec4f {
     var d = mix(100.0, p.y, uniforms[17]);
 
     var spheresCount = i32(uniforms[2]);
@@ -96,15 +94,41 @@ fn scene(p: vec3f) -> vec4f // xyz = color, w = distance
     var all_objects_count = spheresCount + boxesCount + torusCount;
     var result = vec4f(vec3f(1.0), d);
 
-    for (var i = 0; i < all_objects_count; i = i + 1)
-    {
-      // get shape and shape order (shapesinfo)
-      // shapesinfo has the following format:
-      // x: shape type (0: sphere, 1: box, 2: torus)
-      // y: shape index
-      // order matters for the operations, they're sorted on the CPU side
+    for (var i = 0; i < all_objects_count; i = i + 1) {
+        // Obter a forma e informações da ordem da forma (shapesinfo)
+        var shape_info = shapesinfob[i];
+        var shape_type = i32(shape_info.x);
+        var shape_index = i32(shape_info.y);
 
-      // call transform_p and the sdf for the shape
+        // Pegar a forma correspondente
+        var shape = shapesb[shape_index];
+
+        var _quat = quaternion_from_euler(shape.rotation.xyz);
+
+        // Transformar o ponto usando transform_p
+        // var transformed_p = transform_p(p, vec2f(shape.op.z, shape.op.w));
+
+        var transformed_p = p - (shape.transform.xyz + shape.transform_animated.xyz);
+        transformed_p = transform_p(transformed_p, shape.op.zw);
+
+        // Calcular a distância mínima de acordo com o tipo de forma
+        var dist: f32;
+        if (shape_type == 0) {
+            // Esfera
+            dist = sdf_sphere(transformed_p, shape.radius, _quat);
+        } else if (shape_type == 1) {
+            // Caixa
+            dist = sdf_round_box(transformed_p, shape.radius.xyz, shape.radius.w, shape.quat);
+        } else if (shape_type == 2) {
+            // Toro
+            dist = sdf_torus(transformed_p, shape.radius.xy, shape.quat);
+        }
+
+        // Atualizar o resultado se a distância for menor
+        if (dist < result.w) {
+            result = vec4f(shape.color.xyz, dist);
+        }
+
       // call op function with the shape operation
 
       // op format:
@@ -128,9 +152,17 @@ fn march(ro: vec3f, rd: vec3f) -> march_output
   
   for (var i = 0; i < max_marching_steps; i = i + 1)
   {
-      // raymarch algorithm
-      // call scene function and march
-      // if the depth is greater than the max distance or the distance is less than the epsilon, break
+      var current_pos = ro + rd * depth;
+      var scene_result = scene(current_pos);
+      var dist = scene_result.w;
+
+      if (dist < EPSILON || depth > MAX_DIST)
+      {
+          color = scene_result.xyz;
+          break;
+      }
+
+      depth += dist * march_step;
   }
 
   return march_output(color, depth, false);
@@ -138,13 +170,32 @@ fn march(ro: vec3f, rd: vec3f) -> march_output
 
 fn get_normal(p: vec3f) -> vec3f
 {
-  return vec3f(0.0);
+  var EPSILON = uniforms[23];
+  var normal = vec3f(
+      scene(p + vec3f(EPSILON, 0.0, 0.0)).w - scene(p - vec3f(EPSILON, 0.0, 0.0)).w,
+      scene(p + vec3f(0.0, EPSILON, 0.0)).w - scene(p - vec3f(0.0, EPSILON, 0.0)).w,
+      scene(p + vec3f(0.0, 0.0, EPSILON)).w - scene(p - vec3f(0.0, 0.0, EPSILON)).w
+  );
+  return normalize(normal);
 }
 
 // https://iquilezles.org/articles/rmshadows/
 fn get_soft_shadow(ro: vec3f, rd: vec3f, tmin: f32, tmax: f32, k: f32) -> f32
 {
-  return 0.0;
+  var res = 1.0;
+  var t = tmin;
+  for (var i = 0; i < 50; i = i + 1) {
+    var h = scene(ro + rd * t).w;
+    if (h < 0.001) {
+      return 0.0;
+    }
+    res = min(res, k * h / t);
+    t += h;
+    if (t > tmax) {
+      break;
+    }
+  }
+  return res;
 }
 
 fn get_AO(current: vec3f, normal: vec3f) -> f32
@@ -193,13 +244,21 @@ fn get_light(current: vec3f, obj_color: vec3f, rd: vec3f) -> vec3f
     return ambient;
   }
 
-  // calculate the light intensity
-  // Use:
-  // - shadow
-  // - ambient occlusion (optional)
-  // - ambient light
-  // - object color
-  return ambient;
+  // Sombra suave
+  var shadow = get_soft_shadow(current, normalize(light_position - current), 0.01, 100.0, 32.0);
+
+  // Luz difusa
+  var light_dir = normalize(light_position - current);
+  var diffuse = max(dot(normal, light_dir), 0.0);
+  
+  // Luz especular (opcional)
+  var view_dir = normalize(-rd);
+  var reflect_dir = reflect(-light_dir, normal);
+  var specular = pow(max(dot(view_dir, reflect_dir), 0.0), 32.0);
+
+  // Aplicar a cor da luz e somar componentes de iluminação
+  var light = (diffuse + 0.5 * specular) * sun_color * shadow;
+  return ambient + light * obj_color;
 }
 
 fn set_camera(ro: vec3f, ta: vec3f, cr: f32) -> mat3x3<f32>
@@ -254,11 +313,17 @@ fn render(@builtin(global_invocation_id) id : vec3u)
   var rd = camera * normalize(vec3(uv, 1.0));
 
   // call march function and get the color/depth
-  // move ray based on the depth
-  // get light
-  var color = vec3f(1.0);
+  var march_result = march(ro, rd);
+  
+  // get lighting at the surface point
+  var surface_position = ro + rd * march_result.depth;
+  var normal = get_normal(surface_position);
+  var obj_color = march_result.color;
+
+  // calculate ambient light and shading
+  var final_color = get_light(surface_position, obj_color, rd);
   
   // display the result
-  color = linear_to_gamma(color);
-  fb[mapfb(id.xy, uniforms[1])] = vec4(color, 1.0);
+  final_color = linear_to_gamma(final_color);
+  fb[mapfb(id.xy, uniforms[1])] = vec4(final_color, 1.0);
 }
