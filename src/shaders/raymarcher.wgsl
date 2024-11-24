@@ -32,22 +32,25 @@ struct march_output {
   outline : bool,
 };
 
-fn op_smooth_union(d1: f32, d2: f32, col1: vec3f, col2: vec3f, k: f32) -> vec4f
-{
-  var k_eps = max(k, 0.0001);
-  return vec4f(col1, d1);
+fn op_smooth_union(d1: f32, d2: f32, col1: vec3f, col2: vec3f, k: f32) -> vec4f {
+    var h = clamp(0.5 + 0.5 * (d2 - d1) / max(k, 0.0001), 0.0, 1.0);
+    var dist = mix(d2, d1, h) - k * h * (1.0 - h);
+    var color = mix(col2, col1, h);
+    return vec4f(color, dist);
 }
 
-fn op_smooth_subtraction(d1: f32, d2: f32, col1: vec3f, col2: vec3f, k: f32) -> vec4f
-{
-  var k_eps = max(k, 0.0001);
-  return vec4f(col1, d1);
+fn op_smooth_subtraction(d1: f32, d2: f32, col1: vec3f, col2: vec3f, k: f32) -> vec4f {
+    var h = clamp(0.5 - 0.5 * (d2 + d1) / max(k, 0.0001), 0.0, 1.0);
+    var dist = mix(d2, -d1, h) + k * h * (1.0 - h);
+    var color = mix(col2, col1, h);
+    return vec4f(color, dist);
 }
 
-fn op_smooth_intersection(d1: f32, d2: f32, col1: vec3f, col2: vec3f, k: f32) -> vec4f
-{
-  var k_eps = max(k, 0.0001);
-  return vec4f(col1, d1);
+fn op_smooth_intersection(d1: f32, d2: f32, col1: vec3f, col2: vec3f, k: f32) -> vec4f {
+    var h = clamp(0.5 - 0.5 * (d2 - d1) / max(k, 0.0001), 0.0, 1.0);
+    var dist = mix(d2, d1, h) + k * h * (1.0 - h);
+    var color = mix(col2, col1, h);
+    return vec4f(color, dist);
 }
 
 fn op(op: f32, d1: f32, d2: f32, col1: vec3f, col2: vec3f, k: f32) -> vec4f
@@ -108,31 +111,33 @@ fn scene(p: vec3f) -> vec4f {
         var shape = shapesb[shape_index];
         var _quat = quaternion_from_euler(shape.rotation.xyz);
 
-        var transformed_p = p - shape.transform.xyz;
+        // Calcular deslocamento animado baseado em animate_transform
+        var animated_transform = shape.animate_transform.xyz * sin(uniforms[0] * shape.animate_transform.w);
+
+        // Calcular posição transformada, incluindo animação
+        var transformed_p = p - (shape.transform.xyz + animated_transform);
         transformed_p = transform_p(transformed_p, shape.op.zw);
 
+        // Calcular rotação animada baseada em animate_rotation
+        var animated_rotation = shape.animate_rotation.xyz * sin(uniforms[0] * shape.animate_rotation.w);
+        var quat_animated = quaternion_from_euler(animated_rotation + shape.rotation.xyz);
+
+        // Calcular a distância mínima de acordo com o tipo de forma
         var dist: f32;
         if (shape_type == 0) {
-            dist = sdf_sphere(transformed_p, shape.radius, _quat);
+            dist = sdf_sphere(transformed_p, shape.radius, quat_animated);
         } else if (shape_type == 1) {
-            dist = sdf_round_box(transformed_p, shape.radius.xyz, shape.radius.w, _quat);
+            dist = sdf_round_box(transformed_p, shape.radius.xyz, shape.radius.w, quat_animated);
         } else if (shape_type == 2) {
-            dist = sdf_torus(transformed_p, shape.radius.xy, _quat);
+            dist = sdf_torus(transformed_p, shape.radius.xy, quat_animated);
         }
 
-        if (dist < result.w) {
-            result.w = dist; // assign closest distance
-            let res = vec4f(shape.color.xyz,dist);
-            result = res; // assign color and distance 
+        // Atualizar resultado com operações booleanas
+        if (i > 0) { // A partir do segundo objeto, aplique operações
+            result = op(shape.op.x, result.w, dist, result.xyz, shape.color.xyz, shape.op.y);
+        } else if (dist < result.w) { // Primeira iteração ou distância mínima
+            result = vec4f(shape.color.xyz, dist);
         }
-
-      // call op function with the shape operation
-
-      // op format:
-      // x: operation (0: union, 1: subtraction, 2: intersection)
-      // y: k value
-      // z: repeat mode (0: normal, 1: repeat)
-      // w: repeat offset
     }
 
     return result;
@@ -282,9 +287,12 @@ fn set_camera(ro: vec3f, ta: vec3f, cr: f32) -> mat3x3<f32>
   return mat3x3<f32>(cu, cv, cw);
 }
 
-fn animate(val: vec3f, time_scale: f32, offset: f32) -> vec3f
-{
-  return vec3f(0.0);
+fn animate(val: vec3f, time_scale: f32, offset: f32) -> vec3f {
+    return val + vec3f(
+        sin(time_scale * uniforms[0] + offset),
+        cos(time_scale * uniforms[0] + offset),
+        sin(time_scale * uniforms[0] + offset) * cos(time_scale * uniforms[0] + offset)
+    );
 }
 
 @compute @workgroup_size(THREAD_COUNT, 1, 1)
