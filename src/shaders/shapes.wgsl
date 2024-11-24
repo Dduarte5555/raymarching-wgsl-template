@@ -1,7 +1,10 @@
 fn sdf_round_box(p: vec3f, b: vec3f, r: f32, quat: vec4f) -> f32 {
-    var rotated_p = rotate_vector(p, quat);
-    var q = modc(abs(rotated_p) - b, vec3f(0.0));
-    return length(max(q, vec3f(0.0))) - r;
+    // Calcula as coordenadas locais rotacionadas pela quaternion
+    var local_p = rotate_vector(p, quat);
+
+    // Calcula a distância para a superfície da caixa arredondada
+    var q = abs(local_p) - b;
+    return length(max(q, vec3f(0.0))) + min(max(q.x, max(q.y, q.z)), 0.0) - r;
 }
 
 fn sdf_sphere(p: vec3f, r: vec4f, quat: vec4f) -> f32 {

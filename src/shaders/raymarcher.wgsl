@@ -115,9 +115,9 @@ fn scene(p: vec3f) -> vec4f {
         if (shape_type == 0) {
             dist = sdf_sphere(transformed_p, shape.radius, _quat);
         } else if (shape_type == 1) {
-            dist = sdf_round_box(transformed_p, shape.radius.xyz, shape.radius.w, shape.quat);
+            dist = sdf_round_box(transformed_p, shape.radius.xyz, shape.radius.w, _quat);
         } else if (shape_type == 2) {
-            dist = sdf_torus(transformed_p, shape.radius.xy, shape.quat);
+            dist = sdf_torus(transformed_p, shape.radius.xy, _quat);
         }
 
         if (dist < result.w) {
