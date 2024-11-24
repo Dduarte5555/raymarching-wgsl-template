@@ -70,19 +70,25 @@ fn op(op: f32, d1: f32, d2: f32, col1: vec3f, col2: vec3f, k: f32) -> vec4f
 
 // Função para repetir o espaço ao redor de um ponto específico
 fn repeat(p: vec3f, offset: vec3f) -> vec3f {
+    if (all(offset == vec3f(0.0))) { // Verificar se offset é zero
+        return p; // Sem repetição
+    }
     return modc(p + 0.5 * offset, offset) - 0.5 * offset;
 }
 
 // Função para transformar um ponto com diferentes opções
-fn transform_p(p: vec3f, option: vec2f) -> vec3f {
-    // Modo normal
-    if (option.x <= 1.0) {
-        return p;
-    }
+fn transform_p(p: vec3f, option: vec2f) -> vec3f
+{
+  // normal mode
+  if (option.x <= 1.0)
+  {
+    return p;
+  }
 
-    // Retornar modo de repetição/mod
-    return repeat(p, vec3f(option.y));
+  // return repeat / mod mode
+  return repeat(p, vec3f(option.y));
 }
+
 
 fn scene(p: vec3f) -> vec4f {
     var d = mix(100.0, p.y, uniforms[17]);
@@ -92,41 +98,32 @@ fn scene(p: vec3f) -> vec4f {
     var torusCount = i32(uniforms[4]);
 
     var all_objects_count = spheresCount + boxesCount + torusCount;
-    var result = vec4f(vec3f(1.0), d);
+    var result = vec4f(vec3f(1.0), d); // Cor padrão de fundo (branca)
 
     for (var i = 0; i < all_objects_count; i = i + 1) {
-        // Obter a forma e informações da ordem da forma (shapesinfo)
         var shape_info = shapesinfob[i];
-        var shape_type = i32(shape_info.x);
+        var shape_type = f32(shape_info.x);
         var shape_index = i32(shape_info.y);
 
-        // Pegar a forma correspondente
         var shape = shapesb[shape_index];
-
         var _quat = quaternion_from_euler(shape.rotation.xyz);
 
-        // Transformar o ponto usando transform_p
-        // var transformed_p = transform_p(p, vec2f(shape.op.z, shape.op.w));
-
-        var transformed_p = p - (shape.transform.xyz + shape.transform_animated.xyz);
+        var transformed_p = p - shape.transform.xyz;
         transformed_p = transform_p(transformed_p, shape.op.zw);
 
-        // Calcular a distância mínima de acordo com o tipo de forma
         var dist: f32;
         if (shape_type == 0) {
-            // Esfera
             dist = sdf_sphere(transformed_p, shape.radius, _quat);
         } else if (shape_type == 1) {
-            // Caixa
             dist = sdf_round_box(transformed_p, shape.radius.xyz, shape.radius.w, shape.quat);
         } else if (shape_type == 2) {
-            // Toro
             dist = sdf_torus(transformed_p, shape.radius.xy, shape.quat);
         }
 
-        // Atualizar o resultado se a distância for menor
         if (dist < result.w) {
-            result = vec4f(shape.color.xyz, dist);
+            result.w = dist; // assign closest distance
+            let res = vec4f(shape.color.xyz,dist);
+            result = res; // assign color and distance 
         }
 
       // call op function with the shape operation
@@ -141,61 +138,77 @@ fn scene(p: vec3f) -> vec4f {
     return result;
 }
 
-fn march(ro: vec3f, rd: vec3f) -> march_output
-{
-  var max_marching_steps = i32(uniforms[5]);
-  var EPSILON = uniforms[23];
+fn march(ro: vec3f, rd: vec3f) -> march_output {
+    var max_marching_steps = i32(uniforms[5]); // Configurável via uniform
+    var EPSILON = 0.001; // Tolerância ajustada
+    var depth = 0.0; // Distância total percorrida pelo raio
+    var color = vec3f(1.0); // Cor padrão caso nada seja encontrado
 
-  var depth = 0.0;
-  var color = vec3f(0.0);
-  var march_step = uniforms[22];
-  
-  for (var i = 0; i < max_marching_steps; i = i + 1)
-  {
-      var current_pos = ro + rd * depth;
-      var scene_result = scene(current_pos);
-      var dist = scene_result.w;
+    for (var step = 0; step < max_marching_steps; step = step + 1) {
+        var current_pos = ro + rd * depth;
+        var scene_result = scene(current_pos);
+        var dist = scene_result.w;
 
-      if (dist < EPSILON || depth > MAX_DIST)
-      {
-          color = scene_result.xyz;
-          break;
-      }
+        // Se a distância for menor que a tolerância, o raio atingiu algo
+        if (dist < EPSILON) {
+            color = scene_result.xyz;
+            return march_output(color, depth, false); // Interseção encontrada
+        }
 
-      depth += dist * march_step;
-  }
+        // Incrementar o raio pela distância mínima
+        depth += dist;
 
-  return march_output(color, depth, false);
+        // Parar se ultrapassar a distância máxima
+        if (depth > MAX_DIST) {
+            break;
+        }
+    }
+
+    // Retornar a cor final e a profundidade
+    return march_output(color, depth, false); // Sem interseção, retorna cor padrão
 }
 
-fn get_normal(p: vec3f) -> vec3f
-{
-  var EPSILON = uniforms[23];
-  var normal = vec3f(
-      scene(p + vec3f(EPSILON, 0.0, 0.0)).w - scene(p - vec3f(EPSILON, 0.0, 0.0)).w,
-      scene(p + vec3f(0.0, EPSILON, 0.0)).w - scene(p - vec3f(0.0, EPSILON, 0.0)).w,
-      scene(p + vec3f(0.0, 0.0, EPSILON)).w - scene(p - vec3f(0.0, 0.0, EPSILON)).w
-  );
-  return normalize(normal);
+fn get_normal(p: vec3f) -> vec3f {
+    var EPSILON = 0.001; // Valor fixo ou extraído de uniform
+    var dx = vec3f(EPSILON, 0.0, 0.0);
+    var dy = vec3f(0.0, EPSILON, 0.0);
+    var dz = vec3f(0.0, 0.0, EPSILON);
+
+    // Estimação do gradiente
+    var normal = vec3f(
+        scene(p + dx).w - scene(p - dx).w,
+        scene(p + dy).w - scene(p - dy).w,
+        scene(p + dz).w - scene(p - dz).w
+    );
+
+    // Normalizar para garantir direção correta
+    return normalize(normal);
 }
 
 // https://iquilezles.org/articles/rmshadows/
-fn get_soft_shadow(ro: vec3f, rd: vec3f, tmin: f32, tmax: f32, k: f32) -> f32
-{
-  var res = 1.0;
-  var t = tmin;
-  for (var i = 0; i < 50; i = i + 1) {
-    var h = scene(ro + rd * t).w;
-    if (h < 0.001) {
-      return 0.0;
+fn get_soft_shadow(ro: vec3f, rd: vec3f, tmin: f32, tmax: f32, k: f32) -> f32 {
+    var res = 1.0; // Valor inicial: sem sombra
+    var t = tmin; // Distância inicial
+
+    for (var i = 0; i < 256 && t<tmax; i = i + 1) {
+        // Calcular a distância mínima usando a função scene
+        var h = scene(ro + rd * t).w;
+        if (h < 0.001) {
+            return 0.0; // Sombra completa
+        }
+
+        // Atualizar o valor de sombra (evitar divisão por zero)
+        res = min(res, max(0.0, h / (k * t)));
+
+        // Incrementar o raio com base na distância mínima
+        t += clamp(h, 0.002, 0.25); // Avanço menor em áreas próximas
     }
-    res = min(res, k * h / t);
-    t += h;
-    if (t > tmax) {
-      break;
-    }
-  }
-  return res;
+
+    // Garantir que o valor de res está dentro dos limites
+    res = clamp(res, 0.0, 1.0);
+
+    // Suavizar o resultado final para criar a penumbra
+    return 0.25 * (1.0 + res) * (1.0 + res) * (2.0 - res);
 }
 
 fn get_AO(current: vec3f, normal: vec3f) -> f32
@@ -230,35 +243,34 @@ fn get_ambient_light(light_pos: vec3f, sun_color: vec3f, rd: vec3f) -> vec3f
   return ambient;
 }
 
-fn get_light(current: vec3f, obj_color: vec3f, rd: vec3f) -> vec3f
-{
-  var light_position = vec3f(uniforms[13], uniforms[14], uniforms[15]);
-  var sun_color = int_to_rgb(i32(uniforms[16]));
-  var ambient = get_ambient_light(light_position, sun_color, rd);
-  var normal = get_normal(current);
+fn get_light(current: vec3f, obj_color: vec3f, rd: vec3f) -> vec3f {
+    var light_position = vec3f(uniforms[13], uniforms[14], uniforms[15]);
+    var sun_color = int_to_rgb(i32(uniforms[16]));
+    var ambient = get_ambient_light(light_position, sun_color, rd);
+    var normal = get_normal(current);
 
-  // calculate light based on the normal
-  // if the object is too far away from the light source, return ambient light
-  if (length(current) > uniforms[20] + uniforms[8])
-  {
-    return ambient;
-  }
+    if (length(current) > uniforms[20] + uniforms[8])
+    {
+      return ambient;
+    }
 
-  // Sombra suave
-  var shadow = get_soft_shadow(current, normalize(light_position - current), 0.01, 100.0, 32.0);
+    var light_dir = normalize(light_position - current);
+    var diff_inten = max(dot(normal, light_dir), 0.0);
+    var diffuse = diff_inten * obj_color * sun_color;
+    var shadow = get_soft_shadow(current + normal * 0.1, light_dir, 0.01, 100.0, 32.0);
 
-  // Luz difusa
-  var light_dir = normalize(light_position - current);
-  var diffuse = max(dot(normal, light_dir), 0.0);
-  
-  // Luz especular (opcional)
-  var view_dir = normalize(-rd);
-  var reflect_dir = reflect(-light_dir, normal);
-  var specular = pow(max(dot(view_dir, reflect_dir), 0.0), 32.0);
+    var diffuse_light = diffuse * sun_color * shadow;
+    var view_dir = normalize(-rd);
+    var reflect_dir = reflect(-light_dir, normal);
+    var specular = pow(max(dot(view_dir, reflect_dir), 0.0), 32.0);
 
-  // Aplicar a cor da luz e somar componentes de iluminação
-  var light = (diffuse + 0.5 * specular) * sun_color * shadow;
-  return ambient + light * obj_color;
+    var ao = get_AO(current, normal);
+
+    var final_light = ambient * obj_color + (diffuse_light + 0.8 * specular);
+    final_light *= ao;
+
+    // // Garantir que final_light esteja no intervalo correto
+    return clamp(final_light, vec3f(0.0), vec3f(1.0));
 }
 
 fn set_camera(ro: vec3f, ta: vec3f, cr: f32) -> mat3x3<f32>
@@ -294,36 +306,37 @@ fn preprocess(@builtin(global_invocation_id) id : vec3u)
 }
 
 @compute @workgroup_size(THREAD_COUNT, THREAD_COUNT, 1)
-fn render(@builtin(global_invocation_id) id : vec3u)
-{
-  // unpack data
-  var fragCoord = vec2f(f32(id.x), f32(id.y));
-  var rez = vec2(uniforms[1]);
-  var time = uniforms[0];
+fn render(@builtin(global_invocation_id) id : vec3u) {
+    // Unpack data
+    var fragCoord = vec2f(f32(id.x), f32(id.y));
+    var rez = vec2(uniforms[1]);
+    var time = uniforms[0];
 
-  // camera setup
-  var lookfrom = vec3(uniforms[6], uniforms[7], uniforms[8]);
-  var lookat = vec3(uniforms[9], uniforms[10], uniforms[11]);
-  var camera = set_camera(lookfrom, lookat, 0.0);
-  var ro = lookfrom;
+    // Camera setup
+    var lookfrom = vec3(uniforms[6], uniforms[7], uniforms[8]);
+    var lookat = vec3(uniforms[9], uniforms[10], uniforms[11]);
+    var camera = set_camera(lookfrom, lookat, 0.0);
+    var ro = lookfrom;
 
-  // get ray direction
-  var uv = (fragCoord - 0.5 * rez) / rez.y;
-  uv.y = -uv.y;
-  var rd = camera * normalize(vec3(uv, 1.0));
+    // Get ray direction
+    var uv = (fragCoord - 0.5 * rez) / rez.y;
+    uv.y = -uv.y;
+    var rd = camera * normalize(vec3(uv, 1.0));
 
-  // call march function and get the color/depth
-  var march_result = march(ro, rd);
-  
-  // get lighting at the surface point
-  var surface_position = ro + rd * march_result.depth;
-  var normal = get_normal(surface_position);
-  var obj_color = march_result.color;
+    // Call march function and get the color/depth
+    var march_result = march(ro, rd);
 
-  // calculate ambient light and shading
-  var final_color = get_light(surface_position, obj_color, rd);
-  
-  // display the result
-  final_color = linear_to_gamma(final_color);
-  fb[mapfb(id.xy, uniforms[1])] = vec4(final_color, 1.0);
+    // Get lighting at the surface point
+    var surface_position = ro + rd * march_result.depth;
+    var obj_color = march_result.color;
+
+    // Calculate ambient light and shading
+    var final_color = get_light(surface_position, obj_color, rd);
+
+    // Validate final color and apply gamma correction
+    final_color = clamp(final_color, vec3(0.0), vec3(1.0));
+    final_color = linear_to_gamma(final_color);
+
+    // Write to framebuffer with solid alpha
+    fb[mapfb(id.xy, uniforms[1])] = vec4(final_color, 1.0);
 }
